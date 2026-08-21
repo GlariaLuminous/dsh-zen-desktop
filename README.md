@@ -4,12 +4,26 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://www.microsoft.com/windows)
 [![CI](https://github.com/GlariaLuminous/dsh-zen-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/GlariaLuminous/dsh-zen-desktop/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/GlariaLuminous/dsh-zen-desktop?style=social)](https://github.com/GlariaLuminous/dsh-zen-desktop/stargazers)
+[![PowerShell](https://img.shields.io/badge/powered%20by-PowerShell-5391FE?logo=powershell&logoColor=white)](https://learn.microsoft.com/powershell/)
 
 > 让 **DSH Desktop（Windows 桌面版）** 免 429 限流、一键使用 [OpenCode Zen](https://opencode.ai) 免费模型（deepseek-v4-flash-free 等 6 个免费档）的工具包。
 >
 > One-click toolkit to bypass OpenCode Zen 429 rate limits inside DSH Desktop (Windows) and unlock the 6 free models.
 
 > 零修改应用文件：所有部署都落在用户目录（`DSH_HOME`），应用更新后无需重新安装；附自愈脚本，一次配好长期无忧。
+
+## About
+
+`dsh-zen-desktop` 是一个面向 **DSH Desktop（Windows 桌面版）** 的轻量工具包，帮你免 429 限流、一键用上 [OpenCode Zen](https://opencode.ai) 的 6 个免费模型（deepseek-v4-flash-free 等）。
+
+做法是在 DSH Desktop 进程内注入一个本地 OpenAI 兼容代理（`dsh-zen-proxy`），把请求原样转发到 `opencode.ai/zen/v1` 并注入官方客户端所需的 UA 与 `x-opencode-*` 头，从而绕过按 HTTP 指纹识别的 429 限制。整个部署零修改应用文件，全部落在用户目录，应用更新不破坏配置，并附带自愈脚本。
+
+| 项 | 说明 |
+| --- | --- |
+| 平台 | Windows 10 / 11 |
+| 依赖 | PowerShell 5.1+；已安装 DSH Desktop 桌面版；opencode.ai 账号 API key（账号 key，非匿名） |
+| 许可 | MIT（代理插件 vendored 自 [Yee-h/dsh-zen-proxy](https://github.com/Yee-h/dsh-zen-proxy)，同样 MIT） |
+| 定位 | 仅面向 DSH Desktop 桌面版；与 DeepSeek / DSH 官方无关，仅供学习研究，请遵守 OpenCode Zen 服务条款 |
 
 ## 背景：为什么默认会 429
 
@@ -49,7 +63,7 @@ flowchart LR
 - 顺带修复 `storages\*.json` 的 UTF-8 BOM 问题（否则 harness 启动报 `file is not valid JSON`）；
 - **跨端口一致**：`install.ps1` 与 `repair.ps1` 共用 `-Port` 参数（默认 4097），改端口时自愈不会写回错误的硬编码端口。
 
-## 快速开始
+## ⚡ 快速开始（约 30 秒）
 
 前置：已安装 DSH Desktop 桌面版；有 opencode.ai 账号的 API key（账号 key，非匿名）。
 
@@ -146,3 +160,5 @@ Invoke-Pester tests/dsh-zen-desktop.Tests.ps1
 - 代理插件 vendored 自 [Yee-h/dsh-zen-proxy](https://github.com/Yee-h/dsh-zen-proxy)（MIT，见 `plugins/dsh-zen-proxy/LICENSE`）；
 - 本项目 MIT 许可，见 [LICENSE](LICENSE)；
 - 与 DeepSeek / DSH 官方无关，仅供学习研究，请遵守 OpenCode Zen 服务条款。
+
+如果本项目帮你省掉了 429 的麻烦，欢迎点个 ⭐，也欢迎提 Issue / PR 一起完善。

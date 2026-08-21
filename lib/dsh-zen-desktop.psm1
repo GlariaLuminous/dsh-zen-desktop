@@ -245,14 +245,19 @@ function Set-ProviderBaseUrl {
     # provider 不存在 -> 新增(缩进对齐现有 provider,避免错层)
     $found = Find-YamlBlock -Text $Text -Key $ProviderName
     if (-not $found) {
-        $ins = [regex]::Match($Text, "(?m)^(\s*)providers:\s*$")
+        # 匹配不吞行尾 \r\n,保证匹配终点落在 providers 行尾换行之前
+        $ins = [regex]::Match($Text, "(?m)^(\s*)providers:[^\r\n]*$")
         if (-not $ins.Success) { throw "settings.yaml 中未找到 llm-pi-ai.providers,请手动检查配置" }
-        $after = $ins.Index + $ins.Length
-        $step = Get-ProvidersChildStep -Text $Text -ScanStart $after -ProvidersIndent $ins.Groups[1].Value
+        $lineEnd = $ins.Index + $ins.Length
+        # 跳过 providers 行尾换行,定位下一行内容起始,避免把换行符算进子键缩进(step 多 1)
+        $nextStart = $lineEnd
+        $mnl = [regex]::Match($Text.Substring($nextStart), "^\r?\n")
+        if ($mnl.Success) { $nextStart += $mnl.Length }
+        $step = Get-ProvidersChildStep -Text $Text -ScanStart $nextStart -ProvidersIndent $ins.Groups[1].Value
         $providerIndent = $ins.Groups[1].Value + (" " * $step)
-        $fieldIndent = $providerIndent + (" " * $step)
-        $blockText = ConvertTo-ProviderBlock -ProviderName $ProviderName -ApiKeyEnv $ApiKeyEnv -BaseUrl $proxyUrl -Models $Models -Indent $fieldIndent
-        $new = $Text.Substring(0, $after) + "`r`n" + $providerIndent + $blockText.Replace("`r`n", "`r`n" + $providerIndent) + $Text.Substring($after)
+        $blockText = ConvertTo-ProviderBlock -ProviderName $ProviderName -ApiKeyEnv $ApiKeyEnv -BaseUrl $proxyUrl -Models $Models -Indent (" " * $step)
+        # 保留 providers 行完整换行,在行尾与下一行之间插入 opencode 块
+        $new = $Text.Substring(0, $lineEnd) + "`r`n" + $providerIndent + $blockText.Replace("`r`n", "`r`n" + $providerIndent) + "`r`n" + $Text.Substring($nextStart)
         return [pscustomobject]@{ Text = $new; Changed = $true; Action = "added" }
     }
 

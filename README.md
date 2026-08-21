@@ -4,6 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://www.microsoft.com/windows)
 [![CI](https://github.com/GlariaLuminous/dsh-zen-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/GlariaLuminous/dsh-zen-desktop/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/GlariaLuminous/dsh-zen-desktop?style=social)](https://github.com/GlariaLuminous/dsh-zen-desktop/stargazers)
+[![PowerShell](https://img.shields.io/badge/powered%20by-PowerShell-5391FE?logo=powershell&logoColor=white)](https://learn.microsoft.com/powershell/)
 
 > 让 **DSH Desktop（Windows 桌面版）** 免 429 限流、一键使用 [OpenCode Zen](https://opencode.ai) 免费模型（deepseek-v4-flash-free 等 6 个免费档）的工具包。
 >
@@ -49,7 +50,7 @@ flowchart LR
 - 顺带修复 `storages\*.json` 的 UTF-8 BOM 问题（否则 harness 启动报 `file is not valid JSON`）；
 - **跨端口一致**：`install.ps1` 与 `repair.ps1` 共用 `-Port` 参数（默认 4097），改端口时自愈不会写回错误的硬编码端口。
 
-## 快速开始
+## ⚡ 快速开始（约 30 秒）
 
 前置：已安装 DSH Desktop 桌面版；有 opencode.ai 账号的 API key（账号 key，非匿名）。
 
@@ -146,3 +147,5 @@ Invoke-Pester tests/dsh-zen-desktop.Tests.ps1
 - 代理插件 vendored 自 [Yee-h/dsh-zen-proxy](https://github.com/Yee-h/dsh-zen-proxy)（MIT，见 `plugins/dsh-zen-proxy/LICENSE`）；
 - 本项目 MIT 许可，见 [LICENSE](LICENSE)；
 - 与 DeepSeek / DSH 官方无关，仅供学习研究，请遵守 OpenCode Zen 服务条款。
+
+如果本项目帮你省掉了 429 的麻烦，欢迎点个 ⭐，也欢迎提 Issue / PR 一起完善。

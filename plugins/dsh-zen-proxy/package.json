@@ -1,0 +1,21 @@
+{
+  "name": "dsh-zen-proxy",
+  "description": "dsh plugin: in-process OpenAI-compatible proxy that injects official OpenCode Zen client headers, enabling Zen free models in dsh without the 429 FreeUsageLimitError",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "opencode",
+    "zen",
+    "proxy",
+    "free-model"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  }
+}

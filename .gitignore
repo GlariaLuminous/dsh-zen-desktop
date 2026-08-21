@@ -1,0 +1,15 @@
+# 本地部署产生的配置备份
+*.dsh-zen-backup
+
+# 打包 / 临时产物（不应入库）
+*.zip
+nul
+_verify.ps1
+
+# 插件通过 junction 引用应用依赖，不复制
+node_modules/
+
+# 编辑器 / 系统文件
+.DS_Store
+Thumbs.db
+*.log

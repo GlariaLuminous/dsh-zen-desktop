@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pester:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.6.1
+      - name: Run Pester tests
+        shell: pwsh
+        run: Invoke-Pester tests/dsh-zen-desktop.Tests.ps1 -CI

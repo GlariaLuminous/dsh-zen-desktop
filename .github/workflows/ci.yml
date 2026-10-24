@@ -7,28 +7,46 @@ on:
     branches: [main]
 
 jobs:
-  pester:
-    strategy:
-      fail-fast: false
-      matrix:
-        # 5.1 是脚本声明的目标环境(shell: powershell),7 是开发默认环境(shell: pwsh)。
-        # 两套都跑:UTF-8 BOM / CRLF 行尾这类缺陷只在 5.1 上暴露。
-        shell: [powershell, pwsh]
+  # 5.1 是脚本声明的目标环境(Windows PowerShell)。UTF-8 无 BOM、CRLF 行尾
+  # 这类缺陷只在 5.1 + Windows checkout 下暴露,7 上跑不出来。
+  pester-51:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Pester
+
+      - name: Install Pester 5.6.1
         shell: pwsh
         run: |
           if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.6.1')) {
             Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.6.1 -SkipPublisherCheck
           }
-      - name: Run Pester tests
-        shell: ${{ matrix.shell }}
+
+      - name: Run Pester tests (Windows PowerShell 5.1)
+        shell: powershell
         run: |
           Import-Module Pester -RequiredVersion 5.6.1 -Force
           $result = Invoke-Pester -Path tests/dsh-zen-desktop.Tests.ps1 -PassThru -Output Detailed
-          Write-Host "PSVersion: $($PSVersionTable.PSVersion) | Passed: $($result.PassedCount) Failed: $($result.FailedCount)"
+          Write-Host "PSVersion: $($PSVersionTable.PSVersion) Passed: $($result.PassedCount) Failed: $($result.FailedCount)"
+          if ($result.FailedCount -gt 0) { exit 1 }
+
+  pester-7:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester 5.6.1
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.6.1')) {
+            Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.6.1 -SkipPublisherCheck
+          }
+
+      - name: Run Pester tests (PowerShell 7)
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 5.6.1 -Force
+          $result = Invoke-Pester -Path tests/dsh-zen-desktop.Tests.ps1 -PassThru -Output Detailed
+          Write-Host "PSVersion: $($PSVersionTable.PSVersion) Passed: $($result.PassedCount) Failed: $($result.FailedCount)"
           if ($result.FailedCount -gt 0) { exit 1 }
 
   proxy-check:

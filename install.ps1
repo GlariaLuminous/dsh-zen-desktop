@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 一键安装器 —— 让 DSH Desktop(Windows 桌面版)免 429 使用 OpenCode Zen 免费模型。

@@ -6,14 +6,43 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   pester:
+    name: pester (${{ matrix.shell }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pwsh = PowerShell 7, powershell = Windows PowerShell 5.1。
+        # 模块的 #requires 声明了 5.1,而 5.1 对无 BOM 的 UTF-8 脚本会按 ANSI 代码页读,
+        # 两个运行时都跑一遍才能同时覆盖「正则/换行」与「文件编码」两类问题。
+        shell:
+          - pwsh
+          - powershell
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify checkout has no CRLF
+        shell: pwsh
+        run: |
+          $bad = Get-ChildItem -Recurse -Include *.ps1,*.psm1 | Where-Object {
+            [System.IO.File]::ReadAllText($_.FullName).Contains("`r`n")
+          }
+          if ($bad) {
+            $bad.FullName
+            throw 'CRLF found in PowerShell sources - .gitattributes is not being honoured'
+          }
+          "no CRLF in PowerShell sources"
+
       - name: Install Pester
-        shell: pwsh
-        run: Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.6.1
+        shell: ${{ matrix.shell }}
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.6.1 -SkipPublisherCheck
+
       - name: Run Pester tests
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         run: Invoke-Pester tests/dsh-zen-desktop.Tests.ps1 -CI

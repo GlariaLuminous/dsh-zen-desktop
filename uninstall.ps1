@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 卸载器 —— 移除代理插件与相关配置,恢复原始设置。

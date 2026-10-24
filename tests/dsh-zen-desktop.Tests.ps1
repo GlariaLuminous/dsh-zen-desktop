@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
     dsh-zen-desktop 逻辑回归测试(Pester 4/5 兼容)。
 
@@ -379,5 +379,103 @@ Describe "convert + bom" {
         $withoutBom = [byte[]]@(0x68, 0x69)
         Test-StringHasBom -Bytes $withBom | Should -Be $true
         Test-StringHasBom -Bytes $withoutBom | Should -Be $false
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 以下三组是回归护栏,对应一次真实的线上故障:
+#   CI 在 windows-latest 上 checkout 出 CRLF(Windows 版 Git 默认 autocrlf=true),
+#   而模块里的正则写的是 [^\r\n]*$。.NET 的 $ 只匹配 \n 之前,CRLF 里的 \r 挡在中间,
+#   于是 baseURL / providers 全部失配 —— 7 个用例在 CI 红,本地却全绿。
+# 现在:正则去掉 $,并且插入行时沿用原文的换行风格。
+# ---------------------------------------------------------------------------
+
+Describe "CRLF 输入(Windows 检出 / harness 写出的 yaml)" {
+    BeforeAll { Import-Module (Resolve-Path (Join-Path $PSScriptRoot "..\lib\dsh-zen-desktop.psm1")).Path -Force }
+
+    # 刻意用 LF 再手工转 CRLF:测试结果不应依赖本仓库的检出换行
+    It "更新 baseURL 不因 CRLF 失配(<Case>)" -TestCases @(
+        @{ Case = "2 空格缩进"; Lf = "llm-pi-ai:`n  providers:`n    opencode:`n      apiKeyEnv: OPENCODE_API_KEY`n      baseURL: https://opencode.ai/zen/v1`n      models:`n        - deepseek-v4-flash-free`n" }
+        @{ Case = "4 空格缩进"; Lf = "llm-pi-ai:`n    providers:`n        opencode:`n            apiKeyEnv: OPENCODE_API_KEY`n            baseURL: https://opencode.ai/zen/v1`n" }
+    ) {
+        param($Case, $Lf)
+        $crlf = $Lf.Replace("`n", "`r`n")
+        $r = Set-ProviderBaseUrl -Text $crlf -Port 4097
+        $r.Action | Should -Be "updated"
+        ($r.Text -match "http://127\.0\.0\.1:4097/v1") | Should -Be $true
+        ($r.Text -match "opencode\.ai/zen/v1") | Should -Be $false
+        # 换行风格必须保持 CRLF,不能混进裸 LF
+        ($r.Text -match "(?<!\r)\n") | Should -Be $false
+    }
+
+    It "新增 provider 时 providers 行也能被 CRLF 定位到(added)" {
+        $lf = "llm-pi-ai:`n  providers:`n    anthropic:`n      baseURL: https://api.anthropic.com`n"
+        $crlf = $lf.Replace("`n", "`r`n")
+        $r = Set-ProviderBaseUrl -Text $crlf -Port 4097
+        $r.Action | Should -Be "added"
+        ($r.Text -match "(?m)^\s*opencode:\s*$") | Should -Be $true
+        ($r.Text -match "anthropic") | Should -Be $true
+        ($r.Text -match "(?<!\r)\n") | Should -Be $false
+    }
+
+    It "Restore-OfficialBaseUrl 在 CRLF 文本上生效" {
+        $lf = "llm-pi-ai:`n  providers:`n    opencode:`n      baseURL: http://127.0.0.1:4097/v1`n"
+        $crlf = $lf.Replace("`n", "`r`n")
+        $r = Restore-OfficialBaseUrl -Text $crlf
+        ($r -match "https://opencode.ai/zen/v1") | Should -Be $true
+        ($r -match "127\.0\.0\.1") | Should -Be $false
+        ($r -match "(?<!\r)\n") | Should -Be $false
+    }
+
+    It "cordis.patch.yml 追加条目沿用 CRLF" {
+        $r = Add-ZenProxyPatchEntry -Text "- insert:`r`n    - id: other-plugin`r`n" -Port 4097
+        $r.Changed | Should -Be $true
+        ($r.Text -match "zen-proxy") | Should -Be $true
+        ($r.Text -match "(?<!\r)\n") | Should -Be $false
+    }
+
+    It "cordis.patch.yml 追加条目沿用 LF" {
+        $r = Add-ZenProxyPatchEntry -Text "- insert:`n    - id: other-plugin`n" -Port 4097
+        $r.Changed | Should -Be $true
+        ($r.Text -match "`r") | Should -Be $false
+    }
+}
+
+Describe "credentials 边界" {
+    BeforeAll { Import-Module (Resolve-Path (Join-Path $PSScriptRoot "..\lib\dsh-zen-desktop.psm1")).Path -Force }
+
+    It "空文件首行不应是空行" {
+        $r = Set-CredentialValue -Text "" -EnvName "OPENCODE_API_KEY" -Value "sk-test"
+        $r.Text | Should -Be "OPENCODE_API_KEY: sk-test"
+    }
+
+    It "CRLF 文件的追加沿用 CRLF" {
+        $r = Set-CredentialValue -Text "OTHER: 1`r`n" -EnvName "OPENCODE_API_KEY" -Value "sk-test"
+        $r.Text.Contains("`r`nOPENCODE_API_KEY: sk-test") | Should -Be $true
+        ($r.Text -match "(?<!\r)\n") | Should -Be $false
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Windows PowerShell 5.1 会把"无 BOM 的 UTF-8"当成系统 ANSI 代码页(简中环境是 GBK)读,
+# 中文注释变乱码,甚至把 here-string 的引号吞掉导致整个文件解析失败。
+# 5.1 是模块 #requires 声明的最低版本,所以每个脚本都必须是带 BOM 的 UTF-8。
+# ---------------------------------------------------------------------------
+Describe "源文件编码(Windows PowerShell 5.1 兼容)" {
+    It "<Name> 必须是带 BOM 的 UTF-8" -TestCases @(
+        @{ Name = "lib\dsh-zen-desktop.psm1" }
+        @{ Name = "tests\dsh-zen-desktop.Tests.ps1" }
+        @{ Name = "tests\smoke.ps1" }
+        @{ Name = "install.ps1" }
+        @{ Name = "repair.ps1" }
+        @{ Name = "uninstall.ps1" }
+        @{ Name = "add-key.ps1" }
+    ) {
+        param($Name)
+        $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+        $file = Join-Path $root $Name
+        (Test-Path $file) | Should -Be $true
+        $bytes = [System.IO.File]::ReadAllBytes($file)
+        ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -Be $true
     }
 }

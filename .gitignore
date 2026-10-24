@@ -5,6 +5,8 @@
 *.zip
 nul
 _verify.ps1
+# Invoke-Pester -CI 会在仓库根写出这份报告
+testResults.xml
 
 # 插件通过 junction 引用应用依赖，不复制
 node_modules/

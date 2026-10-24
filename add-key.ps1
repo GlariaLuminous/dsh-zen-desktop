@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 多 key 轮换助手 —— 添加第 N 个 Zen API key 与对应 provider。

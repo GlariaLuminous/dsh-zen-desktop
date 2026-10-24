@@ -1,0 +1,23 @@
+# 仓库内统一存 LF,检出也保持 LF。
+#
+# Windows 版 Git 默认 core.autocrlf=true(CI 的 windows-latest 也是),
+# 检出会把换行转成 CRLF。而模块里的行尾正则写成 [^\r\n]*$ 时,
+# .NET 的 $ 只匹配 \n 之前,CRLF 中的 \r 挡在中间 → 全部失配,
+# 表现为「本地绿、CI 红」。这条规则把检出钉死在 LF,消除环境差异。
+#
+# PowerShell 脚本同时带 UTF-8 BOM(见 tests 里的编码断言):
+# Windows PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 代码页读,中文注释会变乱码。
+
+* text=auto eol=lf
+
+*.ps1    text eol=lf
+*.psm1   text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.json   text eol=lf
+*.js     text eol=lf
+
+# 打包 / 图片产物不做换行转换
+*.zip    binary
+*.png    binary

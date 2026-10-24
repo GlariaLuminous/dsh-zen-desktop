@@ -147,13 +147,18 @@ Invoke-WebRequest -Uri "http://127.0.0.1:4097/v1/chat/completions" -Method POST 
 
 ## 测试
 
-逻辑层有 Pester 回归测试（覆盖历史 YAML 块边界 bug），由 GitHub Actions 自动运行：
+逻辑层有 Pester 回归测试，CI 在 **PowerShell 7 与 Windows PowerShell 5.1** 两个运行时各跑一遍（模块 `#requires -Version 5.1`，两个都得过）：
 
 ```powershell
 # 本地运行
 Install-Module Pester -Force -Scope CurrentUser
 Invoke-Pester tests/dsh-zen-desktop.Tests.ps1
 ```
+
+覆盖 YAML 块边界（历史 bug）、provider 增删改、`cordis.patch.yml` 注册/移除、credentials 增改删，外加两组**环境相关**的回归护栏：
+
+- **CRLF 输入**：同一批断言在 LF 与 CRLF 文本上各跑一遍，并断言输出的换行风格与输入一致。Windows 版 Git 默认 `core.autocrlf=true`，CI 检出曾是 CRLF，而行尾正则里的 `[^\r\n]*$` 在 CRLF 上永远失配 —— 这曾让 7 个用例在 CI 红、本地绿。仓库现在用 `.gitattributes` 把检出钉死在 LF，模块本身也不再依赖换行风格。
+- **源文件编码**：每个 `.ps1` / `.psm1` 必须是带 BOM 的 UTF-8。Windows PowerShell 5.1 会把无 BOM 的 UTF-8 当系统 ANSI 代码页读，中文注释变乱码，甚至把 here-string 的引号吞掉，整个文件解析失败。
 
 ## 致谢与许可
 

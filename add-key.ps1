@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 多 key 轮换助手 —— 添加第 N 个 Zen API key 与对应 provider。
@@ -33,6 +33,20 @@ function Get-HarnessHome {
 
 function Get-Utf8NoBomWriter { return New-Object System.Text.UTF8Encoding($false) }
 
+# key 写入 YAML:能裸写的裸写(保持与旧版本、与下游读取器的兼容性),
+# 只有含 YAML 特殊字符时才退化为单引号标量(内部单引号加倍)。
+# 替换时统一用 MatchEvaluator,避免 key 中的 $ / $& / $1 被当成 .NET 替换模板展开。
+function ConvertTo-YamlScalar([string]$Value) {
+    if ($Value -match '^[A-Za-z0-9._/+=:@-]+$') { return $Value }
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
+# 按行加缩进:不依赖行尾类型(仓库里是 LF,.Replace("`r`n") 会静默不生效导致层级错乱)
+function Add-LineIndent([string]$Text, [string]$Prefix) {
+    $lines = $Text -split "\r?\n"
+    return (($lines | ForEach-Object { $Prefix + $_ }) -join "`r`n")
+}
+
 $harness = Get-HarnessHome
 $envName = "OPENCODE_API_KEY_$Slot"
 $providerName = "opencode-$Slot"
@@ -41,11 +55,13 @@ $proxyUrl = "http://127.0.0.1:$Port/v1"
 $credFile = Join-Path $harness ".credentials.yaml"
 $raw = [System.IO.File]::ReadAllText($credFile)
 $pattern = "(?m)^$envName\s*:\s*\S+"
+$line = "${envName}: $(ConvertTo-YamlScalar $Key)"
+$evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $line }
 if ($raw -match $pattern) {
-    $raw = [regex]::Replace($raw, $pattern, "${envName}: $Key")
+    $raw = [regex]::Replace($raw, $pattern, $evaluator)
     Write-Host "已更新 $envName" -ForegroundColor Green
 } else {
-    $raw = $raw.TrimEnd() + "`r`n${envName}: $Key"
+    $raw = $raw.TrimEnd() + "`r`n" + $line
     Write-Host "已添加 $envName" -ForegroundColor Green
 }
 [System.IO.File]::WriteAllText($credFile, $raw, (Get-Utf8NoBomWriter))
@@ -68,10 +84,11 @@ ${providerName}:
         - deepseek-v3-free
         - deepseek-r1-flash-free
 "@
-$insertAfter = [regex]::Match($raw, "(?m)^\s*providers:\s*$")
+$insertAfter = [regex]::Match($raw, "(?m)^(\s*)providers:\s*$")
 if (-not $insertAfter.Success) { throw "settings.yaml 中未找到 llm-pi-ai.providers" }
 $pos = $insertAfter.Index + $insertAfter.Length
-$raw = $raw.Substring(0, $pos) + "`r`n        " + $provider.Replace("`r`n", "`r`n        ") + $raw.Substring($pos)
+$providerIndent = $insertAfter.Groups[1].Value + "    "
+$raw = $raw.Substring(0, $pos) + "`r`n" + (Add-LineIndent -Text $provider -Prefix $providerIndent) + "`r`n" + $raw.Substring($pos)
 [System.IO.File]::WriteAllText($settingsFile, $raw, (Get-Utf8NoBomWriter))
 
 Write-Host "完成。重启 DSH Desktop 后,在模型选择器中选择 $providerName 下的模型即可使用第 $Slot 个 key。" -ForegroundColor Cyan

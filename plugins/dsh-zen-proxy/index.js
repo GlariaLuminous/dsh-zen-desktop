@@ -35,6 +35,8 @@ export const Config = z.object({
     .default("opencode/1.15.5 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"),
   clientHeader: z.string().default("cli"),
   projectHeader: z.string().default("global"),
+  maxBodyBytes: z.number().default(64 * 1024 * 1024),
+  upstreamTimeoutMs: z.number().default(600000),
 });
 
 export const inject = [];
@@ -42,11 +44,26 @@ export const inject = [];
 /** Deterministic per-request random id: `ses_` / `msg_` + 10 chars. */
 const rnd = (p) => `${p}${Math.random().toString(36).slice(2, 12)}`;
 
+/** Hop-by-hop headers must not be copied across the proxy boundary. */
+const HOP_BY_HOP = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
 /**
  * @param {import("@deepseek-ai/cordis").Context} ctx
  * @param {z.infer<typeof Config>} config
  */
 export function apply(ctx, config) {
+  // 复用 TLS 连接：否则每次模型调用都要重新握手,首字延迟显著增加。
+  const agent = new https.Agent({ keepAlive: true, maxSockets: 64 });
+
   const server = http.createServer((req, res) => {
     const { method, url } = req;
 
@@ -62,10 +79,30 @@ export function apply(ctx, config) {
       return;
     }
 
-    let body = "";
-    req.on("data", (c) => (body += c));
+    // 按 Buffer 收集并限制大小:字符串拼接会切断多字节 UTF-8 字符,无上限会被撑爆内存。
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    req.on("data", (c) => {
+      if (tooLarge) return;
+      size += c.length;
+      if (size > config.maxBodyBytes) {
+        tooLarge = true;
+        chunks.length = 0;
+        res.writeHead(413, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: { type: "payload_too_large", message: `zen-proxy: request body exceeds ${config.maxBodyBytes} bytes` },
+          })
+        );
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => {
-      forward(req, res, { method: "POST", path: `${config.upstreamBasePath}/chat/completions`, body });
+      if (tooLarge) return;
+      forward(req, res, { method: "POST", path: `${config.upstreamBasePath}/chat/completions`, body: Buffer.concat(chunks) });
     });
   });
 
@@ -80,7 +117,9 @@ export function apply(ctx, config) {
       );
     });
     return () => {
+      server.closeAllConnections?.();
       server.close();
+      agent.destroy();
     };
   }, "zen-proxy.server");
 
@@ -96,10 +135,11 @@ export function apply(ctx, config) {
       "x-opencode-session": rnd("ses_"),
       "x-opencode-request": rnd("msg_"),
     };
-    if (body !== null) headers["content-length"] = Buffer.byteLength(body);
+    if (body !== null) headers["content-length"] = body.length;
 
     const out = https.request(
       {
+        agent,
         host: config.upstreamHost,
         port: 443,
         method,
@@ -107,15 +147,36 @@ export function apply(ctx, config) {
         headers,
       },
       (up) => {
-        res.writeHead(up.statusCode, up.headers);
+        const outHeaders = {};
+        for (const [k, v] of Object.entries(up.headers)) {
+          if (!HOP_BY_HOP.has(k.toLowerCase())) outHeaders[k] = v;
+        }
+        res.writeHead(up.statusCode, outHeaders);
         up.pipe(res);
       }
     );
+
+    // 上游无响应时不能无限挂住 socket。
+    out.setTimeout(config.upstreamTimeoutMs, () => {
+      out.destroy(new Error(`upstream timeout after ${config.upstreamTimeoutMs}ms`));
+    });
+
     out.on("error", (e) => {
       ctx.logger.warn(`zen-proxy: upstream error: ${e.message}`);
-      res.writeHead(502);
-      res.end(String(e));
+      // 已经写过响应头时再 writeHead 会抛 ERR_HTTP_HEADERS_SENT,直接销毁连接。
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      res.writeHead(502, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { type: "bad_gateway", message: "zen-proxy: upstream request failed" } }));
     });
+
+    // 客户端中途断开时释放上游连接,避免 socket 泄漏。
+    res.on("close", () => {
+      if (!res.writableEnded) out.destroy();
+    });
+
     if (body !== null) out.end(body);
     else out.end();
   }

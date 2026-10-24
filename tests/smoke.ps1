@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\lib\dsh-zen-desktop.psm1') -Force
 $raw = @'
 llm-pi-ai:

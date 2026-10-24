@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
     dsh-zen-desktop 共享逻辑模块。
     所有纯逻辑(文本处理/路径定位/校验)都放在这里,供 install/repair/uninstall/add-key/check 与 Pester 测试共用。
@@ -209,6 +209,34 @@ function Find-YamlBlock {
     }
 }
 
+function Get-TextNewLine {
+    <#
+    .SYNOPSIS
+        (内部 helper)探测文本主行尾:含 CRLF 则为 CRLF,否则 LF。
+        插入新行时沿用原文件行尾,避免把 CRLF 文件写成混合行尾。
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    if ($Text.Contains("`r`n")) { return "`r`n" }
+    return "`n"
+}
+
+function Add-LineIndent {
+    <#
+    .SYNOPSIS
+        (内部 helper)逐行加前缀,行尾类型无关(不依赖 .Replace("`r`n"),LF 文件上也不会静默失效)。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Prefix,
+        [string]$NewLine
+    )
+    if (-not $NewLine) { $NewLine = Get-TextNewLine -Text $Text }
+    $lines = $Text -split "\r?\n"
+    return (($lines | ForEach-Object { $Prefix + $_ }) -join $NewLine)
+}
+
 function Set-ProviderBaseUrl {
     <#
     .SYNOPSIS
@@ -236,6 +264,7 @@ function Set-ProviderBaseUrl {
         [string[]]$Models = $script:DefaultModels
     )
     $proxyUrl = "http://127.0.0.1:$Port/v1"
+    $eol = Get-TextNewLine -Text $Text
 
     # 已指向本地代理 -> 不动
     if ($Text.IndexOf($proxyUrl, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
@@ -245,8 +274,8 @@ function Set-ProviderBaseUrl {
     # provider 不存在 -> 新增(缩进对齐现有 provider,避免错层)
     $found = Find-YamlBlock -Text $Text -Key $ProviderName
     if (-not $found) {
-        # 匹配不吞行尾 \r\n,保证匹配终点落在 providers 行尾换行之前
-        $ins = [regex]::Match($Text, "(?m)^(\s*)providers:[^\r\n]*$")
+        # 不用 "[^\r\n]*$":CRLF 文件的 $ 锚在 \r 之后,匹配必然失败
+        $ins = [regex]::Match($Text, "(?m)^(\s*)providers:[^\r\n]*")
         if (-not $ins.Success) { throw "settings.yaml 中未找到 llm-pi-ai.providers,请手动检查配置" }
         $lineEnd = $ins.Index + $ins.Length
         # 跳过 providers 行尾换行,定位下一行内容起始,避免把换行符算进子键缩进(step 多 1)
@@ -256,22 +285,23 @@ function Set-ProviderBaseUrl {
         $step = Get-ProvidersChildStep -Text $Text -ScanStart $nextStart -ProvidersIndent $ins.Groups[1].Value
         $providerIndent = $ins.Groups[1].Value + (" " * $step)
         $blockText = ConvertTo-ProviderBlock -ProviderName $ProviderName -ApiKeyEnv $ApiKeyEnv -BaseUrl $proxyUrl -Models $Models -Indent (" " * $step)
-        # 保留 providers 行完整换行,在行尾与下一行之间插入 opencode 块
-        $new = $Text.Substring(0, $lineEnd) + "`r`n" + $providerIndent + $blockText.Replace("`r`n", "`r`n" + $providerIndent) + "`r`n" + $Text.Substring($nextStart)
+        # 逐行加缩进并以原文件行尾拼接,不做 .Replace("`r`n") —— LF 文件上那会静默不生效
+        $indented = Add-LineIndent -Text $blockText -Prefix $providerIndent -NewLine $eol
+        $new = $Text.Substring(0, $lineEnd) + $eol + $indented + $eol + $Text.Substring($nextStart)
         return [pscustomobject]@{ Text = $new; Changed = $true; Action = "added" }
     }
 
     # provider 存在 -> 块内替换 baseURL / 补 apiKeyEnv
-    # 注意用 [^\r\n]* 而非 .*,避免吞掉行尾 \r 导致 CRLF 混成 LF
+    # 同样不用 $ 锚:CRLF 文件里 [^\r\n]*$ 匹配不到,会静默不改
     $block = $found.Block
-    $newBlock = $block -replace "(?m)^(\s*)baseURL:[^\r\n]*$", ('${1}baseURL: ' + $proxyUrl)
+    $newBlock = $block -replace "(?m)^(\s*)baseURL:[^\r\n]*", ('${1}baseURL: ' + $proxyUrl)
     if ($newBlock -notmatch "apiKeyEnv:\s*\S") {
-        $apikeyLine = '${1}apiKeyEnv: ' + $ApiKeyEnv + "`r`n" + '${1}models:'
+        $apikeyLine = '${1}apiKeyEnv: ' + $ApiKeyEnv + $eol + '${1}models:'
         if ($newBlock -match "(?m)^(\s*)models:") {
             $newBlock = $newBlock -replace "(?m)^(\s*)models:", $apikeyLine
         } else {
             $fieldIndent = Get-ProviderFieldIndent -Block $newBlock
-            $newBlock = $newBlock.TrimEnd() + "`r`n" + $fieldIndent + "apiKeyEnv: $ApiKeyEnv" + "`r`n"
+            $newBlock = $newBlock.TrimEnd() + $eol + $fieldIndent + "apiKeyEnv: $ApiKeyEnv" + $eol
         }
     }
     $new = $Text.Substring(0, $found.Start) + $newBlock + $Text.Substring($found.End)
@@ -289,7 +319,7 @@ function Restore-OfficialBaseUrl {
         [Parameter(Mandatory)][string]$Text,
         [string]$OfficialUrl = $script:OfficialBaseUrl
     )
-    $new = $Text -replace "(?m)^(\s*)baseURL:\s*http://127\.0\.0\.1:\d+/v1[^\r\n]*$", ('${1}baseURL: ' + $OfficialUrl)
+    $new = $Text -replace "(?m)^(\s*)baseURL:\s*http://127\.0\.0\.1:\d+/v1[^\r\n]*", ('${1}baseURL: ' + $OfficialUrl)
     return $new
 }
 
@@ -324,8 +354,9 @@ function Add-ZenProxyPatchEntry {
         upstreamBasePath: $script:DefaultUpstreamBasePath
 "@
     $trimmed = $Text.Trim()
-    $new = if ($trimmed -eq "[]") { $entry } else { $Text.TrimEnd() + "`r`n" + $entry }
-    return [pscustomobject]@{ Text = $new + "`r`n"; Changed = $true }
+    $eol = Get-TextNewLine -Text $Text
+    $new = if ($trimmed -eq "[]") { $entry } else { $Text.TrimEnd() + $eol + $entry }
+    return [pscustomobject]@{ Text = $new + $eol; Changed = $true }
 }
 
 function Remove-ZenProxyPatchEntry {
@@ -369,10 +400,12 @@ function Set-CredentialValue {
     $line = "${EnvName}: $Value"
     $pattern = "(?m)^$([regex]::Escape($EnvName))\s*:\s*\S+"
     if ($Text -match $pattern) {
-        $new = [regex]::Replace($Text, $pattern, $line)
+        # MatchEvaluator:Value 里的 $ / $& / $1 不能被当成替换模板展开
+        $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $line }
+        $new = [regex]::Replace($Text, $pattern, $evaluator)
         $action = "updated"
     } else {
-        $new = $Text.TrimEnd() + "`r`n" + $line
+        $new = $Text.TrimEnd() + (Get-TextNewLine -Text $Text) + $line
         $action = "added"
     }
     return [pscustomobject]@{ Text = $new; Changed = $true; Action = $action }

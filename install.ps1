@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 一键安装器 —— 让 DSH Desktop(Windows 桌面版)免 429 使用 OpenCode Zen 免费模型。
@@ -95,6 +95,20 @@ function Get-Utf8NoBomWriter {
     return New-Object System.Text.UTF8Encoding($false)
 }
 
+# key 写入 YAML:能裸写的裸写(保持与旧版本、与下游读取器的兼容性),
+# 只有含 YAML 特殊字符时才退化为单引号标量(内部单引号加倍)。
+# 替换时统一用 MatchEvaluator,避免 key 中的 $ / $& / $1 被当成 .NET 替换模板展开。
+function ConvertTo-YamlScalar([string]$Value) {
+    if ($Value -match '^[A-Za-z0-9._/+=:@-]+$') { return $Value }
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
+# 按行加缩进:不依赖源文件的行尾类型(仓库里是 LF,写成 .Replace("`r`n") 会静默不生效)
+function Add-LineIndent([string]$Text, [string]$Prefix) {
+    $lines = $Text -split "\r?\n"
+    return (($lines | ForEach-Object { $Prefix + $_ }) -join "`r`n")
+}
+
 function Update-CordisPatch([string]$Harness) {
     $patchFile = Join-Path $Harness "profiles\web\cordis.patch.yml"
     if (-not (Test-Path $patchFile)) { throw "找不到 cordis.patch.yml: $patchFile" }
@@ -133,19 +147,29 @@ function Update-SettingsYaml([string]$Harness, [int]$Port) {
     $proxyUrl = "http://127.0.0.1:$Port/v1"
     if ($raw -match [regex]::Escape($proxyUrl)) { Write-Skip "settings.yaml 已指向本地代理"; return }
 
-    if ($raw -match "(?m)^\s*baseURL:\s*https://opencode\.ai/zen/v1\s*$") {
-        $new = $raw -replace "(?m)^\s*baseURL:\s*https://opencode\.ai/zen/v1\s*$", "      baseURL: $proxyUrl"
+    if ($raw -match "(?m)^(\s*)baseURL:\s*https://opencode\.ai/zen/v1\s*$") {
+        # 保留原有字段缩进,不硬编码空格数(2/4 空格体系都能对)
+        $new = $raw -replace "(?m)^(\s*)baseURL:\s*https://opencode\.ai/zen/v1\s*$", ('${1}baseURL: ' + $proxyUrl)
         Write-Ok "settings.yaml: baseURL -> $proxyUrl"
-    } elseif ($raw -match "(?m)^opencode:\s*$") {
-        $block = $raw.Substring($raw.IndexOf([regex]::Match($raw, "(?m)^opencode:\s*$").Index))
-        $nextKey = [regex]::Match($block, "(?m)^\S.*$", "RightToLeft")
-        $end = $nextKey.Index + $nextKey.Length
-        $opencodeBlock = $block.Substring(0, $end)
-        $newBlock = $opencodeBlock -replace "(?m)^(\s*)baseURL:.*$", "`$1baseURL: $proxyUrl"
+    } elseif ($raw -match "(?m)^(\s*)opencode:\s*$") {
+        # 块边界:从 opencode 键行起,到下一个"缩进小于等于键缩进"的非空行为止
+        $mStart = [regex]::Match($raw, "(?m)^(\s*)opencode:\s*$")
+        $keyIndent = $mStart.Groups[1].Value
+        $blockStart = $mStart.Index
+        $blockEnd = $raw.Length
+        $rest = $raw.Substring($blockStart + $mStart.Length)
+        $boundary = [regex]::Match($rest, "(?m)^[ \t]{0,$($keyIndent.Length)}\S")
+        if ($boundary.Success) { $blockEnd = $blockStart + $mStart.Length + $boundary.Index }
+        $opencodeBlock = $raw.Substring($blockStart, $blockEnd - $blockStart)
+        $newBlock = $opencodeBlock -replace "(?m)^(\s*)baseURL:.*$", ('${1}baseURL: ' + $proxyUrl)
         if ($newBlock -notmatch "apiKeyEnv:\s*OPENCODE_API_KEY") {
-            $newBlock = $newBlock -replace "(?m)^(\s*)models:", "`$1apiKeyEnv: OPENCODE_API_KEY`r`n`$1models:"
+            if ($newBlock -match "(?m)^(\s*)models:") {
+                $newBlock = $newBlock -replace "(?m)^(\s*)models:", ('${1}apiKeyEnv: OPENCODE_API_KEY' + "`r`n" + '${1}models:')
+            } else {
+                $newBlock = $newBlock.TrimEnd() + "`r`n" + $keyIndent + "    apiKeyEnv: OPENCODE_API_KEY`r`n"
+            }
         }
-        $new = $raw.Substring(0, $raw.IndexOf([regex]::Match($raw, "(?m)^opencode:\s*$").Index)) + $newBlock + $block.Substring($end)
+        $new = $raw.Substring(0, $blockStart) + $newBlock + $raw.Substring($blockEnd)
         Write-Ok "settings.yaml: 已更新 opencode provider(baseURL=$proxyUrl)"
     } else {
         $provider = @"
@@ -160,10 +184,11 @@ opencode:
         - deepseek-v3-free
         - deepseek-r1-flash-free
 "@
-        $insertAfter = [regex]::Match($raw, "(?m)^\s*providers:\s*$")
+        $insertAfter = [regex]::Match($raw, "(?m)^(\s*)providers:\s*$")
         if (-not $insertAfter.Success) { throw "settings.yaml 中未找到 llm-pi-ai.providers,请手动检查配置" }
         $pos = $insertAfter.Index + $insertAfter.Length
-        $new = $raw.Substring(0, $pos) + "`r`n        " + $provider.Replace("`r`n", "`r`n        ") + $raw.Substring($pos)
+        $providerIndent = $insertAfter.Groups[1].Value + "    "
+        $new = $raw.Substring(0, $pos) + "`r`n" + (Add-LineIndent -Text $provider -Prefix $providerIndent) + "`r`n" + $raw.Substring($pos)
         Write-Ok "settings.yaml: 已添加 opencode provider(baseURL=$proxyUrl)"
     }
     [System.IO.File]::WriteAllText($settingsFile, $new, (Get-Utf8NoBomWriter))
@@ -174,9 +199,10 @@ function Update-Credentials([string]$Harness, [string]$Key) {
     $raw = [System.IO.File]::ReadAllText($credFile)
     $linePattern = "(?m)^OPENCODE_API_KEY:\s*\S+"
     if ($Key) {
-        $line = "OPENCODE_API_KEY: $Key"
+        $line = "OPENCODE_API_KEY: $(ConvertTo-YamlScalar $Key)"
         if ($raw -match $linePattern) {
-            $raw = [regex]::Replace($raw, $linePattern, $line)
+            $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $line }
+            $raw = [regex]::Replace($raw, $linePattern, $evaluator)
             Write-Ok ".credentials.yaml: 已更新 OPENCODE_API_KEY"
         } else {
             $raw = $raw.TrimEnd() + "`r`n" + $line
@@ -189,7 +215,7 @@ function Update-Credentials([string]$Harness, [string]$Key) {
         Write-Host "    请在 https://opencode.ai/account 登录后创建 API key(需为登录账号的 key,匿名 key 无效)。"
         $inputKey = Read-Host "    粘贴你的 Zen API key"
         if ([string]::IsNullOrWhiteSpace($inputKey)) { throw "未提供 key,中止。可稍后重跑本脚本。:)" }
-        $raw = $raw.TrimEnd() + "`r`nOPENCODE_API_KEY: " + $inputKey.Trim()
+        $raw = $raw.TrimEnd() + "`r`nOPENCODE_API_KEY: " + (ConvertTo-YamlScalar $inputKey.Trim())
         Write-Ok ".credentials.yaml: 已配置 OPENCODE_API_KEY"
     }
     [System.IO.File]::WriteAllText($credFile, $raw, (Get-Utf8NoBomWriter))
@@ -201,7 +227,12 @@ function Repair-StorageBom([string]$Harness) {
     foreach ($f in Get-ChildItem $storages -Filter "*.json" -File) {
         $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
         if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-            [System.IO.File]::WriteAllBytes($f.FullName, $bytes[3..($bytes.Length - 1)])
+            # 只有 BOM 的空文件:直接写空数组,不要走切片(PowerShell 的 3..2 会倒序取到越界元素)
+            $payload = if ($bytes.Length -eq 3) { [byte[]]@() } else { [byte[]]$bytes[3..($bytes.Length - 1)] }
+            if ($bytes.Length -gt 3) {
+                Copy-Item $f.FullName "$($f.FullName).dsh-zen-backup" -Force
+            }
+            [System.IO.File]::WriteAllBytes($f.FullName, $payload)
             Write-Ok "已去除 BOM: $($f.Name)(避免 harness 启动报 'file is not valid JSON')"
         }
     }
@@ -260,7 +291,7 @@ if ($NoRestart) {
         try {
             $keyLine = (Get-Content (Join-Path $harness ".credentials.yaml") | Select-String '^OPENCODE_API_KEY:' | Select-Object -First 1).Line
             if ($keyLine) {
-                $testKey = ($keyLine -split ':\s*', 2)[1].Trim()
+                $testKey = ($keyLine -split ':\s*', 2)[1].Trim().Trim("'")
                 $body = '{"model":"deepseek-v4-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
                 $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/chat/completions" -Method POST `
                     -Headers @{ Authorization = "Bearer $testKey" } -Body $body -UseBasicParsing -TimeoutSec 30

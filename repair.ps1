@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 自愈脚本 —— 检查并修复所有部署项,应用更新/误删后一键恢复。
@@ -130,12 +130,17 @@ $settingsFile = Join-Path $harness "settings.yaml"
 if (Test-Path $settingsFile) {
     $raw = [System.IO.File]::ReadAllText($settingsFile)
     if ($raw -notmatch [regex]::Escape("http://127.0.0.1:$Port/v1")) {
-        if ($raw -match "(?m)^opencode:\s*$") {
-            $block = $raw.Substring($raw.IndexOf([regex]::Match($raw, "(?m)^opencode:\s*$").Index))
-            $nextKey = [regex]::Match($block, "(?m)^\S.*$", "RightToLeft")
-            $end = $nextKey.Index + $nextKey.Length
-            $newBlock = $block.Substring(0, $end) -replace "(?m)^(\s*)baseURL:.*$", "`$1baseURL: http://127.0.0.1:$Port/v1"
-            $new = $raw.Substring(0, $raw.IndexOf([regex]::Match($raw, "(?m)^opencode:\s*$").Index)) + $newBlock + $block.Substring($end)
+        if ($raw -match "(?m)^(\s*)opencode:\s*$") {
+            # 块边界:从 opencode 键行起,到下一个"缩进小于等于键缩进"的非空行为止
+            $mStart = [regex]::Match($raw, "(?m)^(\s*)opencode:\s*$")
+            $keyIndent = $mStart.Groups[1].Value
+            $blockStart = $mStart.Index
+            $blockEnd = $raw.Length
+            $boundary = [regex]::Match($raw.Substring($blockStart + $mStart.Length), "(?m)^[ \t]{0,$($keyIndent.Length)}\S")
+            if ($boundary.Success) { $blockEnd = $blockStart + $mStart.Length + $boundary.Index }
+            $opencodeBlock = $raw.Substring($blockStart, $blockEnd - $blockStart)
+            $newBlock = $opencodeBlock -replace "(?m)^(\s*)baseURL:.*$", ('${1}baseURL: http://127.0.0.1:' + $Port + '/v1')
+            $new = $raw.Substring(0, $blockStart) + $newBlock + $raw.Substring($blockEnd)
             [System.IO.File]::WriteAllText($settingsFile, $new, (Get-Utf8NoBomWriter))
             Fix "settings.yaml: baseURL 已指回本地代理"
             $script:fixed++
@@ -148,7 +153,10 @@ if (Test-Path $storages) {
     foreach ($f in Get-ChildItem $storages -Filter "*.json" -File) {
         $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
         if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-            [System.IO.File]::WriteAllBytes($f.FullName, $bytes[3..($bytes.Length - 1)])
+            # 只有 BOM 的空文件:直接写空,不要走切片(PowerShell 的 3..2 会倒序取到越界元素)
+            $payload = if ($bytes.Length -eq 3) { [byte[]]@() } else { [byte[]]$bytes[3..($bytes.Length - 1)] }
+            Copy-Item $f.FullName "$($f.FullName).dsh-zen-backup" -Force
+            [System.IO.File]::WriteAllBytes($f.FullName, $payload)
             Fix "去除 BOM: $($f.Name)"
             $script:fixed++
         }

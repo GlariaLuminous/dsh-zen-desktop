@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 卸载器 —— 移除代理插件与相关配置,恢复原始设置。
@@ -40,6 +40,14 @@ $harness = Get-HarnessHome
 $pluginDir = Join-Path $harness "profiles\web\plugins\dsh-zen-proxy"
 
 if (Test-Path $pluginDir) {
+    # 先摘掉 reparse point(junction/symlink),再递归删目录。
+    # 不同 Windows/PS 版本对 "Remove-Item -Recurse 是否跟随重解析点" 行为不一致,
+    # 这里显式只删链接本身,保证绝不动到应用依赖树。
+    $linkDir = Join-Path $pluginDir "node_modules\@deepseek-ai"
+    if (Test-Path $linkDir) {
+        [System.IO.Directory]::Delete($linkDir, $false)
+        Write-Host "已移除依赖链接(不影响应用依赖树): $linkDir" -ForegroundColor Green
+    }
     Remove-Item $pluginDir -Recurse -Force
     Write-Host "已删除插件目录: $pluginDir" -ForegroundColor Green
 } else {
@@ -50,16 +58,15 @@ $patchFile = Join-Path $harness "profiles\web\cordis.patch.yml"
 if (Test-Path $patchFile) {
     $raw = [System.IO.File]::ReadAllText($patchFile)
     if ($raw -match "zen-proxy") {
-        $lines = $raw -split "`r?`n"
-        $out = New-Object System.Collections.Generic.List[string]
-        $drop = $false
-        foreach ($line in $lines) {
-            if ($line -match "dsh-zen-desktop:") { $drop = $true }
-            if ($drop -and $line -match "^\S" -and $line -notmatch "^- insert:") { $drop = $false }
-            if (-not $drop) { $out.Add($line) }
-        }
-        $new = $out -join "`r`n"
-        [System.IO.File]::WriteAllText($patchFile, $new, (New-Object System.Text.UTF8Encoding($false)))
+        Copy-Item $patchFile "$patchFile.dsh-zen-backup" -Force
+        # 按顶层 "- insert:" 块切分,含 zen-proxy 的整块丢弃(幂等,不依赖注释行)
+        $segments = [regex]::Matches($raw, "(?s)(?m)^- insert:.*?(?=^- insert:|\z)")
+        $kept = @($segments | Where-Object { $_.Value -notmatch "zen-proxy" } | ForEach-Object { $_.Value })
+        $new = ($kept -join "").TrimEnd()
+        # 顺带清掉本工具写的注释行,避免留下孤立注释
+        $new = $new -replace "(?m)^# dsh-zen-desktop:.*\r?\n?", ""
+        if ([string]::IsNullOrWhiteSpace($new)) { $new = "[]" }
+        [System.IO.File]::WriteAllText($patchFile, $new + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
         Write-Host "已从 cordis.patch.yml 移除 zen-proxy 注册" -ForegroundColor Green
     } else {
         Write-Host "cordis.patch.yml 无 zen-proxy 注册,跳过。" -ForegroundColor DarkYellow

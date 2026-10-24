@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
     dsh-zen-desktop 逻辑回归测试(Pester 4/5 兼容)。
 
@@ -379,5 +379,86 @@ Describe "convert + bom" {
         $withoutBom = [byte[]]@(0x68, 0x69)
         Test-StringHasBom -Bytes $withBom | Should -Be $true
         Test-StringHasBom -Bytes $withoutBom | Should -Be $false
+    }
+}
+
+Describe "CRLF 配置(Windows 常见行尾)回归" {
+    BeforeAll { Import-Module (Resolve-Path (Join-Path $PSScriptRoot "..\lib\dsh-zen-desktop.psm1")).Path -Force }
+
+    It "CRLF 文本里 baseURL 必须被改写(旧实现用 [^\r\n]*$ 在 CRLF 上永不匹配)" {
+        $raw = "llm-pi-ai:`r`n  providers:`r`n    opencode:`r`n      apiKeyEnv: OPENCODE_API_KEY`r`n      baseURL: https://opencode.ai/zen/v1`r`n      models:`r`n        - deepseek-v4-flash-free`r`n"
+        $r = Set-ProviderBaseUrl -Text $raw -Port 4097
+        $r.Action | Should -Be "updated"
+        ($r.Text -match "http://127\.0\.0\.1:4097/v1") | Should -Be $true
+        ($r.Text -match "https://opencode\.ai/zen/v1") | Should -Be $false
+    }
+
+    It "CRLF 文本改写后不应出现裸 LF(不引入混合行尾)" {
+        $raw = "llm-pi-ai:`r`n  providers:`r`n    opencode:`r`n      baseURL: https://opencode.ai/zen/v1`r`n      models:`r`n        - m`r`n"
+        $r = Set-ProviderBaseUrl -Text $raw -Port 4097
+        # 去掉全部 CRLF 后不应再残留任何 LF
+        ($r.Text.Replace("`r`n", "") -match "`n") | Should -Be $false
+    }
+
+    It "CRLF 文本新增 provider 时缩进对齐且行尾一致" {
+        $raw = "llm-pi-ai:`r`n  providers:`r`n    anthropic:`r`n      baseURL: https://api.anthropic.com`r`n"
+        $r = Set-ProviderBaseUrl -Text $raw -Port 4097
+        $r.Action | Should -Be "added"
+        ($r.Text.Replace("`r`n", "") -match "`n") | Should -Be $false
+        $lines = $r.Text -split "\r\n"
+        (@($lines | Where-Object { $_ -match '^    opencode:\s*$' }).Count -gt 0) | Should -Be $true
+        (@($lines | Where-Object { $_ -match '^      baseURL: http://127\.0\.0\.1:4097/v1\s*$' }).Count -gt 0) | Should -Be $true
+    }
+
+    It "CRLF 文本里 Restore-OfficialBaseUrl 必须把代理地址还原" {
+        $raw = "llm-pi-ai:`r`n  providers:`r`n    opencode:`r`n      baseURL: http://127.0.0.1:4097/v1`r`n"
+        $r = Restore-OfficialBaseUrl -Text $raw
+        ($r -match "https://opencode\.ai/zen/v1") | Should -Be $true
+        ($r -match "127\.0\.0\.1") | Should -Be $false
+    }
+
+    It "LF 文本仍按 LF 写入(可被 \n 还原的行数不变)" {
+        $raw = "llm-pi-ai:`n  providers:`n    opencode:`n      baseURL: https://opencode.ai/zen/v1`n      models:`n        - m`n"
+        $r = Set-ProviderBaseUrl -Text $raw -Port 4097
+        ($r.Text -match "`r") | Should -Be $false
+        ($r.Text -match "http://127\.0\.0\.1:4097/v1") | Should -Be $true
+    }
+}
+
+Describe "凭据写入:特殊字符不被当成替换模板" {
+    BeforeAll { Import-Module (Resolve-Path (Join-Path $PSScriptRoot "..\lib\dsh-zen-desktop.psm1")).Path -Force }
+
+    It "含 `$ / `$& / `$1 的 key 原样写入,不破坏整行" {
+        $key = 'sk-a$&b$1c'
+        $r = Set-CredentialValue -Text "OPENCODE_API_KEY: sk-old" -EnvName "OPENCODE_API_KEY" -Value $key
+        $r.Text | Should -Be "OPENCODE_API_KEY: $key"
+    }
+}
+
+Describe "脚本编码与可解析性(PS 5.1 中文环境回归)" {
+    BeforeAll {
+        $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+        $script:allPsFiles = @(
+            "install.ps1", "repair.ps1", "uninstall.ps1", "add-key.ps1",
+            "lib\dsh-zen-desktop.psm1", "tests\dsh-zen-desktop.Tests.ps1"
+        )
+    }
+
+    It "所有脚本必须带 UTF-8 BOM(无 BOM 时 PS 5.1 按 ANSI 解码,中文注释会吞掉换行导致语法错)" {
+        foreach ($name in $script:allPsFiles) {
+            $bytes = [System.IO.File]::ReadAllBytes((Join-Path $script:repoRoot $name))
+            $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+            if (-not $hasBom) { throw "$name 缺少 UTF-8 BOM" }
+        }
+    }
+
+    It "所有脚本必须能被当前 PowerShell 解析(0 语法错误)" {
+        foreach ($name in $script:allPsFiles) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:repoRoot $name), [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) {
+                throw "$name 有 $($errors.Count) 个语法错误,首个在行 $($errors[0].Extent.StartLineNumber): $($errors[0].Message)"
+            }
+        }
     }
 }

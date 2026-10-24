@@ -15,8 +15,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Pester 5.6.1
-        shell: pwsh
+        # 必须用 powershell 装:5.1 只从 Documents\WindowsPowerShell\Modules 找模块,
+        # 用 pwsh 装会落到 Documents\PowerShell\Modules,5.1 加载不到
+        shell: powershell
         run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.6.1')) {
             Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.6.1 -SkipPublisherCheck
           }

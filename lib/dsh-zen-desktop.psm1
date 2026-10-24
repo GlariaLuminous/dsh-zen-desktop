@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
     dsh-zen-desktop 共享逻辑模块。
     所有纯逻辑(文本处理/路径定位/校验)都放在这里,供 install/repair/uninstall/add-key/check 与 Pester 测试共用。
@@ -96,6 +96,18 @@ function Get-Utf8NoBomWriter {
     return New-Object System.Text.UTF8Encoding($false)
 }
 
+function Get-TextNewline {
+    <#
+    .SYNOPSIS
+        (只读)推断文本使用的换行风格,插入新行时沿用,避免把 CRLF 混进 LF 文件(反之亦然)。
+        Windows 上 harness 写出的 yaml 可能是任一种,所以不能写死。
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    if ($Text.Contains("`r`n")) { return "`r`n" }
+    return "`n"
+}
+
 # ---------- YAML 纯文本处理(核心,可测) ----------
 function ConvertTo-ProviderBlock {
     <#
@@ -118,7 +130,8 @@ function ConvertTo-ProviderBlock {
         [Parameter(Mandatory)][string]$ApiKeyEnv,
         [Parameter(Mandatory)][string]$BaseUrl,
         [string[]]$Models = $script:DefaultModels,
-        [string]$Indent = "    "
+        [string]$Indent = "    ",
+        [string]$Newline = "`r`n"
     )
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("${ProviderName}:")
@@ -126,7 +139,7 @@ function ConvertTo-ProviderBlock {
     $lines.Add("${Indent}baseURL: $BaseUrl")
     $lines.Add("${Indent}models:")
     foreach ($m in $Models) { $lines.Add("${Indent}${Indent}- $m") }
-    return ($lines -join "`r`n")
+    return ($lines -join $Newline)
 }
 
 function Get-ProviderFieldIndent {
@@ -245,8 +258,9 @@ function Set-ProviderBaseUrl {
     # provider 不存在 -> 新增(缩进对齐现有 provider,避免错层)
     $found = Find-YamlBlock -Text $Text -Key $ProviderName
     if (-not $found) {
-        # 匹配不吞行尾 \r\n,保证匹配终点落在 providers 行尾换行之前
-        $ins = [regex]::Match($Text, "(?m)^(\s*)providers:[^\r\n]*$")
+        # [^\r\n]* 本身已经停在行尾,后面不要再加 $:
+        # .NET 的 $ 在多行模式下只匹配 \n 之前,而 CRLF 里 \r 挡在中间,加了就永远失配。
+        $ins = [regex]::Match($Text, "(?m)^(\s*)providers:[^\r\n]*")
         if (-not $ins.Success) { throw "settings.yaml 中未找到 llm-pi-ai.providers,请手动检查配置" }
         $lineEnd = $ins.Index + $ins.Length
         # 跳过 providers 行尾换行,定位下一行内容起始,避免把换行符算进子键缩进(step 多 1)
@@ -255,23 +269,25 @@ function Set-ProviderBaseUrl {
         if ($mnl.Success) { $nextStart += $mnl.Length }
         $step = Get-ProvidersChildStep -Text $Text -ScanStart $nextStart -ProvidersIndent $ins.Groups[1].Value
         $providerIndent = $ins.Groups[1].Value + (" " * $step)
-        $blockText = ConvertTo-ProviderBlock -ProviderName $ProviderName -ApiKeyEnv $ApiKeyEnv -BaseUrl $proxyUrl -Models $Models -Indent (" " * $step)
+        $nl = Get-TextNewline -Text $Text
+        $blockText = ConvertTo-ProviderBlock -ProviderName $ProviderName -ApiKeyEnv $ApiKeyEnv -BaseUrl $proxyUrl -Models $Models -Indent (" " * $step) -Newline $nl
         # 保留 providers 行完整换行,在行尾与下一行之间插入 opencode 块
-        $new = $Text.Substring(0, $lineEnd) + "`r`n" + $providerIndent + $blockText.Replace("`r`n", "`r`n" + $providerIndent) + "`r`n" + $Text.Substring($nextStart)
+        $new = $Text.Substring(0, $lineEnd) + $nl + $providerIndent + $blockText.Replace($nl, $nl + $providerIndent) + $nl + $Text.Substring($nextStart)
         return [pscustomobject]@{ Text = $new; Changed = $true; Action = "added" }
     }
 
     # provider 存在 -> 块内替换 baseURL / 补 apiKeyEnv
-    # 注意用 [^\r\n]* 而非 .*,避免吞掉行尾 \r 导致 CRLF 混成 LF
+    # 用 [^\r\n]* 而非 .*,避免吞掉行尾 \r 导致 CRLF 混成 LF;同样不要补 $
     $block = $found.Block
-    $newBlock = $block -replace "(?m)^(\s*)baseURL:[^\r\n]*$", ('${1}baseURL: ' + $proxyUrl)
+    $nl = Get-TextNewline -Text $block
+    $newBlock = $block -replace "(?m)^(\s*)baseURL:[^\r\n]*", ('${1}baseURL: ' + $proxyUrl)
     if ($newBlock -notmatch "apiKeyEnv:\s*\S") {
-        $apikeyLine = '${1}apiKeyEnv: ' + $ApiKeyEnv + "`r`n" + '${1}models:'
+        $apikeyLine = '${1}apiKeyEnv: ' + $ApiKeyEnv + $nl + '${1}models:'
         if ($newBlock -match "(?m)^(\s*)models:") {
             $newBlock = $newBlock -replace "(?m)^(\s*)models:", $apikeyLine
         } else {
             $fieldIndent = Get-ProviderFieldIndent -Block $newBlock
-            $newBlock = $newBlock.TrimEnd() + "`r`n" + $fieldIndent + "apiKeyEnv: $ApiKeyEnv" + "`r`n"
+            $newBlock = $newBlock.TrimEnd() + $nl + $fieldIndent + "apiKeyEnv: $ApiKeyEnv" + $nl
         }
     }
     $new = $Text.Substring(0, $found.Start) + $newBlock + $Text.Substring($found.End)
@@ -289,7 +305,7 @@ function Restore-OfficialBaseUrl {
         [Parameter(Mandatory)][string]$Text,
         [string]$OfficialUrl = $script:OfficialBaseUrl
     )
-    $new = $Text -replace "(?m)^(\s*)baseURL:\s*http://127\.0\.0\.1:\d+/v1[^\r\n]*$", ('${1}baseURL: ' + $OfficialUrl)
+    $new = $Text -replace "(?m)^(\s*)baseURL:\s*http://127\.0\.0\.1:\d+/v1[^\r\n]*", ('${1}baseURL: ' + $OfficialUrl)
     return $new
 }
 
@@ -323,9 +339,12 @@ function Add-ZenProxyPatchEntry {
         upstreamHost: $script:DefaultUpstreamHost
         upstreamBasePath: $script:DefaultUpstreamBasePath
 "@
+    $nl = Get-TextNewline -Text $Text
+    # here-string 用文件自身的换行,再沿用到目标文本的换行风格
+    $entry = $entry.Replace("`r`n", "`n").Replace("`n", $nl)
     $trimmed = $Text.Trim()
-    $new = if ($trimmed -eq "[]") { $entry } else { $Text.TrimEnd() + "`r`n" + $entry }
-    return [pscustomobject]@{ Text = $new + "`r`n"; Changed = $true }
+    $new = if ($trimmed -eq "[]") { $entry } else { $Text.TrimEnd() + $nl + $entry }
+    return [pscustomobject]@{ Text = $new + $nl; Changed = $true }
 }
 
 function Remove-ZenProxyPatchEntry {
@@ -372,7 +391,10 @@ function Set-CredentialValue {
         $new = [regex]::Replace($Text, $pattern, $line)
         $action = "updated"
     } else {
-        $new = $Text.TrimEnd() + "`r`n" + $line
+        # 空文件不要先插一个空行,否则 .credentials.yaml 会以空行开头
+        $nl = Get-TextNewline -Text $Text
+        $prefix = $Text.TrimEnd()
+        $new = if ($prefix -eq "") { $line } else { $prefix + $nl + $line }
         $action = "added"
     }
     return [pscustomobject]@{ Text = $new; Changed = $true; Action = $action }

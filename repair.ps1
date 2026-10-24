@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     dsh-zen-desktop 自愈脚本 —— 检查并修复所有部署项,应用更新/误删后一键恢复。
